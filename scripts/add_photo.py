@@ -1,6 +1,6 @@
 """Adds or replaces by hand the photo of a driver: drivers/{driverId}.webp
 
-Usage: python -I scripts/add_photo.py <driverId> <image file or URL> [--remove-background] [--drivers-csv drivers.csv]
+Usage: python -I scripts/add_photo.py <driverId> <image file or URL> [--remove-background] [--data <address of the CSV files>]
 
 The image is normalized like the rest (see normalize.py). It has to be transparent; if it isn't, use
 --remove-background (needs `pip install -r requirements-rembg.txt`, see the README). If the driver already has an
@@ -10,7 +10,6 @@ Afterwards, push the image: the API finds it with its own `npm run set-driver-ph
 """
 
 import argparse
-import csv
 import io
 import sys
 from pathlib import Path
@@ -19,6 +18,7 @@ from PIL import Image
 
 # `python -I` doesn't add the script's directory to the path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from data import data_source, load_env_file, read_drivers  # noqa: E402
 from fetch_drivers import get  # noqa: E402
 from normalize import has_transparency, normalize  # noqa: E402
 
@@ -42,13 +42,14 @@ def main() -> None:
     parser.add_argument('driver_id')
     parser.add_argument('source', help='image file or URL')
     parser.add_argument('--remove-background', action='store_true')
-    parser.add_argument('--drivers-csv', type=Path, help='drivers.csv of the API, to check that the id exists')
+    parser.add_argument('--data', help='address of the CSV files of the API (a URL or a folder), to check that the id exists')
+    parser.add_argument('--skip-check', action='store_true', help='do not check that the id exists (for example, offline)')
     args = parser.parse_args()
 
-    if args.drivers_csv:
-        with open(args.drivers_csv, newline='', encoding='utf-8') as file:
-            if args.driver_id not in {row['id'] for row in csv.DictReader(file)}:
-                sys.exit(f'{args.driver_id} is not a driver id of {args.drivers_csv}')
+    if not args.skip_check:
+        load_env_file()
+        if args.driver_id not in {driver['id'] for driver in read_drivers(data_source(args.data))}:
+            sys.exit(f'{args.driver_id} is not a driver id of RaceDex (use --skip-check to add it anyway)')
 
     data = read_source(args.source)
     if args.remove_background:

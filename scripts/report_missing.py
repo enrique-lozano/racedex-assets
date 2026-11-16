@@ -1,39 +1,40 @@
-"""Lists the drivers of the RaceDex database that have no photo in drivers/, the most recent ones first
+"""Lists the drivers that have no photo in drivers/, the most recent ones first
 
-Usage: python -I scripts/report_missing.py <racedex.db of the RaceDex API>
+Usage: python -I scripts/report_missing.py [--data <address of the CSV files>]
 """
 
-import sqlite3
+import argparse
 import sys
 from pathlib import Path
+
+# `python -I` doesn't add the script's directory to the path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from data import data_source, driver_seasons, load_env_file, read_drivers  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def main(database: Path) -> None:
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--data', help='address of the folder with the CSV files of the API (a URL or a folder)')
+    args = parser.parse_args()
     sys.stdout.reconfigure(encoding='utf-8')  # the console of Windows can't print every name
+
+    load_env_file()
+    source = data_source(args.data)
+    drivers = read_drivers(source)
+    seasons = driver_seasons(source)
     available = {path.stem for path in (ROOT / 'drivers').glob('*.webp')}
 
-    with sqlite3.connect(f'file:{database}?mode=ro', uri=True) as connection:
-        rows = connection.execute(
-            """
-            SELECT d.id, d.fullName, MIN(es.season), MAX(es.season)
-            FROM drivers d
-            LEFT JOIN entries e ON e.driverId = d.id
-            LEFT JOIN entrantSeasons es ON es.id = e.entrantSeasonId
-            GROUP BY d.id
-            ORDER BY MAX(es.season) DESC, d.id
-            """
-        ).fetchall()
-
-    missing = [row for row in rows if row[0] not in available]
-    for driver_id, name, first, last in missing:
-        seasons = f'{first}-{last}' if first else 'no entries'
-        print(f'{driver_id:<24} {name:<40} {seasons}')
-    print(f'\n{len(missing)} of {len(rows)} drivers without photo')
+    missing = sorted(
+        (driver for driver in drivers if driver['id'] not in available),
+        key=lambda driver: (-seasons.get(driver['id'], (0, 0))[1], driver['id']),
+    )
+    for driver in missing:
+        first, last = seasons.get(driver['id'], (None, None))
+        print(f"{driver['id']:<24} {driver['fullName']:<40} {f'{first}-{last}' if first else 'no entries'}")
+    print(f'\n{len(missing)} of {len(drivers)} drivers without photo')
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 2:
-        sys.exit(__doc__)
-    main(Path(sys.argv[1]))
+    main()

@@ -1,6 +1,6 @@
 """Downloads the driver cut-outs that are missing into drivers/{driverId}.webp, normalizing them (see normalize.py)
 
-Usage: python -I scripts/fetch_drivers.py <drivers.csv of the RaceDex API> [--db racedex.db] [--attempts 3]
+Usage: python -I scripts/fetch_drivers.py [--data <address of the CSV files>] [--attempts 3]
 
 Drivers that already have an image are skipped (also the ones added by hand with add_photo.py), so the script can be
 re-run to pick up new drivers. To download one again, delete its image. The images come from these sources, in order.
@@ -14,17 +14,16 @@ Both are optional, but at least one is needed. See scripts/README.md for how to 
      {id}    id of the driver in RaceDex
      {tla}   abbreviation of the driver, in capitals (VER)
      {ref}   first 3 letters of the first name + first 3 of the last name + 01, in capitals (MAXVER01)
-     {year}  a season of the driver: from the last one back, `--attempts` seasons (needs the database)
+     {year}  a season of the driver: from the last one back, `--attempts` seasons
 
 The variables can be in a `.env` file in the root of the repository (see .env.example), which is not committed.
+The drivers (and their seasons) are read from the CSV files of the RaceDex API on GitHub, see data.py.
 """
 
 import argparse
-import csv
 import io
 import os
 import re
-import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -35,25 +34,15 @@ from PIL import Image
 
 # `python -I` doesn't add the script's directory to the path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from data import data_source, driver_seasons, load_env_file, read_drivers  # noqa: E402
 from matching import match_pages, slugify  # noqa: E402
 from normalize import has_transparency, normalize  # noqa: E402
 
-USER_AGENT = 'RaceDexAssets/1.0 (https://github.com/enrique-lozano/racedex-assets)'
+from data import USER_AGENT  # noqa: E402
 DELAY_SECONDS = 0.3
 MIN_IMAGE_SIZE = 200
 ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = ROOT / 'drivers'
-
-def load_env_file() -> None:
-    """Sets the variables of `.env` that are not already set"""
-    env_file = ROOT / '.env'
-    if not env_file.exists():
-        return
-    for line in env_file.read_text(encoding='utf-8').splitlines():
-        key, separator, value = line.partition('=')
-        if separator and not line.lstrip().startswith('#'):
-            os.environ.setdefault(key.strip(), value.strip().strip('"\''))
-
 
 def get(url: str) -> bytes:
     response = requests.get(url, headers={'User-Agent': USER_AGENT}, timeout=30)
@@ -78,19 +67,6 @@ def try_get_image(url: str) -> bytes | None:
 def reference(driver: dict[str, str]) -> str:
     letters = lambda name: slugify(name).replace('-', '').upper()[:3]
     return f"{letters(driver['firstName'])}{letters(driver['lastName'])}01"
-
-
-def driver_seasons(database: Path) -> dict[str, tuple[int, int]]:
-    """driver id -> (first season, last season)"""
-    with sqlite3.connect(f'file:{database}?mode=ro', uri=True) as connection:
-        rows = connection.execute(
-            """
-            SELECT e.driverId, MIN(es.season), MAX(es.season)
-            FROM entries e JOIN entrantSeasons es ON es.id = e.entrantSeasonId
-            GROUP BY e.driverId
-            """
-        ).fetchall()
-    return {driver_id: (first, last) for driver_id, first, last in rows}
 
 
 def sitemap_pages(sitemap_url: str, page_path: str) -> dict[str, str]:
@@ -160,8 +136,7 @@ def fetch_from_templates(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('drivers_csv', type=Path)
-    parser.add_argument('--db', type=Path, help='RaceDex database (racedex.db), needed if a template uses {year}')
+    parser.add_argument('--data', help='address of the folder with the CSV files of the API (a URL or a folder)')
     parser.add_argument('--attempts', type=int, default=3, help='seasons tried for {year}, from the last one back')
     args = parser.parse_args()
 
@@ -171,14 +146,9 @@ def main() -> None:
     if not sitemap_urls and not templates:
         sys.exit('Set DRIVERS_SITEMAP_URL and/or DRIVERS_FALLBACK_URLS (see the top of this file)')
 
-    with open(args.drivers_csv, newline='', encoding='utf-8') as file:
-        drivers = list(csv.DictReader(file))
-
-    seasons = {}
-    if any('{year}' in template for template in templates):
-        if not args.db or not args.db.exists():
-            sys.exit('A template with {year} needs the database of the API: use --db <path to racedex.db>')
-        seasons = driver_seasons(args.db)
+    source = data_source(args.data)
+    drivers = read_drivers(source)
+    seasons = driver_seasons(source) if any('{year}' in template for template in templates) else {}
 
     OUT_DIR.mkdir(exist_ok=True)
     have = {path.stem for path in OUT_DIR.glob('*.webp')}

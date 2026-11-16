@@ -9,7 +9,7 @@ Python scripts to build and maintain the images of `drivers/`. They work on Wind
 | [`report_missing.py`](report_missing.py) | Lists the drivers without a photo. |
 | [`normalize.py`](normalize.py) | The framing that the first two give to every image. |
 
-`drivers.csv` and `racedex.db` below are the files of the [RaceDex API](https://github.com/enrique-lozano/F1-World-API), where the driver ids come from.
+The drivers (and the seasons they raced) are read from the CSV files of the [RaceDex API](https://github.com/enrique-lozano/F1-World-API) on GitHub, so you don't need to clone it. To read them from somewhere else (a fork, or a folder of your computer), use `--data <address of the folder with the CSV files>` or the `RACEDEX_DATA_URL` variable.
 
 ## Getting started
 
@@ -32,7 +32,7 @@ cp .env.example .env             # Windows: copy .env.example .env
 and fill `.env` (it is not committed). Then:
 
 ```bash
-python -I scripts/fetch_drivers.py path/to/drivers.csv --db path/to/racedex.db
+python -I scripts/fetch_drivers.py
 ```
 
 ## Fetching the drivers that are missing
@@ -58,7 +58,7 @@ A template can use:
 | `{ref}` | 3 letters of the first name + 3 of the last name + `01`, in capitals | `MAXVER01` |
 | `{year}` | a season of the driver, from the last one back | `2024` |
 
-With `{year}` the last 3 seasons are tried (`--attempts` changes it) and the script needs the database: `--db racedex.db`.
+With `{year}` the last 3 seasons of the driver are tried (`--attempts` changes it).
 
 **How the pages are matched to the drivers.** By name, without anything to configure. First the names that are exactly the same, then the ones that look alike: `geoff-crossley` is Geoffrey Crossley, `aj-foyt` is Anthony Joseph Foyt and `zhou-guanyu` is Guanyu Zhou. The ones matched like this are printed, so you can check them. If two drivers fit equally well, or the driver is not in our data, the page is left out and printed with the address of its image. If it is a driver of ours, add it by hand with `add_photo.py <driverId> <that address>`. The rules are in [`matching.py`](matching.py), and its tests run with `python -m unittest discover tests`.
 
@@ -68,7 +68,7 @@ With `{year}` the last 3 seasons are tried (`--attempts` changes it) and the scr
 python -I scripts/add_photo.py prost ~/Downloads/prost.png
 ```
 
-The image is framed like the rest and saved as `drivers/prost.webp`, replacing the previous one. `--drivers-csv drivers.csv` checks that the id exists.
+The image is framed like the rest and saved as `drivers/prost.webp`, replacing the previous one. It checks that the id exists (`--skip-check` if you are offline).
 
 The image has to be **transparent**. If it isn't, add `--remove-background`, which removes the background with [rembg](https://github.com/danielgatis/rembg), an AI model that runs on your computer:
 
@@ -85,7 +85,7 @@ python -I scripts/add_photo.py prost ~/Downloads/prost.jpg --remove-background
 ## Listing the drivers without a photo
 
 ```bash
-python -I scripts/report_missing.py path/to/racedex.db
+python -I scripts/report_missing.py
 ```
 
 ## How the images are framed
