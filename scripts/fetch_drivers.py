@@ -8,6 +8,7 @@ re-run to pick up new drivers with few requests. Options:
   --only ID ...        only these drivers
   --force              download again (and replace) the images that already exist. It can mean hundreds of requests
                        to the sites of the sources, so it asks before, unless there are only a few drivers or --yes
+  --workers N          images downloaded at the same time (4); --delay S: seconds between requests to the same site (0.3)
   --verbose            show the address of the images of the pages that don't match a driver
   --remove-background  remove the background of the images that are not transparent, instead of skipping them
                        (needs requirements-rembg.txt; about 20 seconds per image)
@@ -38,7 +39,9 @@ import io
 import os
 import re
 import sys
+import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -53,7 +56,8 @@ from matching import match_pages, slugify  # noqa: E402
 from normalize import has_transparency, normalize  # noqa: E402
 from ui import console, fail, info, ok, progress, table, warn  # noqa: E402
 
-DELAY_SECONDS = 0.3  # between requests, so the sites of the sources are not overloaded
+DELAY_SECONDS = 0.3  # minimum time between two requests to the same site, so it is not overloaded
+WORKERS = 4
 TIMEOUT_SECONDS = 15
 CONFIRM_FROM = 20  # --force asks for confirmation from this number of drivers
 MIN_IMAGE_SIZE = 200
@@ -63,8 +67,32 @@ OUT_DIR = ROOT / 'drivers'
 PLACEHOLDER = re.compile(r'\{(\w+)\}')
 
 
+class Throttle:
+    """Makes the requests to the same site wait, whatever the number of threads, to be polite with it"""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self.next_at: dict[str, float] = {}
+        self.lock = threading.Lock()
+
+    def wait(self, host: str) -> None:
+        with self.lock:
+            now = time.monotonic()
+            start = max(now, self.next_at.get(host, now))
+            self.next_at[host] = start + self.seconds
+        time.sleep(start - now)
+
+
+throttle = Throttle(DELAY_SECONDS)
+sessions = threading.local()
+
+
 def get(url: str) -> bytes:
-    response = requests.get(url, headers={'User-Agent': USER_AGENT}, timeout=TIMEOUT_SECONDS)
+    throttle.wait(urlparse(url).netloc)
+    if not hasattr(sessions, 'session'):  # one per thread: it keeps the connections open between requests
+        sessions.session = requests.Session()
+        sessions.session.headers['User-Agent'] = USER_AGENT
+    response = sessions.session.get(url, timeout=TIMEOUT_SECONDS)
     response.raise_for_status()
     return response.content
 
@@ -77,8 +105,6 @@ def try_get_image(url: str, remove_bg: bool = False) -> bytes | None:
         image.load()
     except (requests.RequestException, OSError):
         return None
-    finally:
-        time.sleep(DELAY_SECONDS)
 
     if min(image.size) < MIN_IMAGE_SIZE:
         return None
@@ -125,6 +151,22 @@ def check_templates(templates: list[str]) -> None:
             fail(f'Unknown placeholder {{{sorted(unknown)[0]}}} in {template}\nThe valid ones are: {", ".join(sorted(valid))}')
 
 
+def run_in_parallel(jobs: list, work, workers: int, bar, task, found: dict) -> None:
+    """Runs `work(job)` (it returns `(driver id, image, origin)` or None) with several threads and keeps the bar updated"""
+    executor = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futures: list[Future] = [executor.submit(work, job) for job in jobs]
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                found[result[0]] = result[1:]
+            bar.update(task, advance=1, found=f'[green]{len(found)} found[/green]')
+    except BaseException:
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    executor.shutdown()
+
+
 def sitemap_pages(sitemap_url: str, page_path: str) -> dict[str, str]:
     """slug of the page -> URL of its image, for the pages with an image whose URL has `page_path`"""
     pages = {}
@@ -138,7 +180,7 @@ def sitemap_pages(sitemap_url: str, page_path: str) -> dict[str, str]:
 
 
 def fetch_from_sitemaps(
-    sitemap_urls: list[str], page_path: str, drivers: list[dict[str, str]], targets: set[str], remove_bg: bool, verbose: bool
+    sitemap_urls: list[str], page_path: str, drivers: list[dict[str, str]], targets: set[str], remove_bg: bool, verbose: bool, workers: int
 ) -> dict[str, tuple[bytes, str]]:
     """driver id -> (image, where it came from)"""
     pages: dict[str, str] = {}
@@ -155,17 +197,18 @@ def fetch_from_sitemaps(
 
     wanted = [match for match in matches if match.driver_id in targets]
     found: dict[str, tuple[bytes, str]] = {}
+
+    def download(match):
+        data = try_get_image(pages[match.slug], remove_bg)
+        if not data:
+            console.print(f'[yellow]![/yellow] {match.slug}: not a valid image (not transparent? use --remove-background)')
+            return None
+        return match.driver_id, data, urlparse(pages[match.slug]).netloc
+
     if wanted:
         with progress() as bar:
             task = bar.add_task('Downloading from the sitemap', total=len(wanted), found='')
-            for match in wanted:
-                bar.update(task, description=f'Sitemap: {names[match.driver_id]}'.ljust(44)[:44])
-                data = try_get_image(pages[match.slug], remove_bg)
-                if data:
-                    found[match.driver_id] = (data, urlparse(pages[match.slug]).netloc)
-                else:
-                    bar.console.print(f'[yellow]![/yellow] {match.slug}: not a valid image (not transparent? use --remove-background)')
-                bar.update(task, advance=1, found=f'[green]{len(found)} found[/green]')
+            run_in_parallel(wanted, download, workers, bar, task, found)
 
     if unmatched:
         warn(f"{len(unmatched)} pages of the sitemap are not drivers of ours (add one with add_photo.py if it is): {', '.join(unmatched)}")
@@ -184,35 +227,34 @@ def fetch_from_templates(
     seasons: dict[str, tuple[int, int]],
     attempts: int,
     remove_bg: bool,
+    workers: int,
 ) -> dict[str, tuple[bytes, str]]:
     wanted = [driver for driver in drivers if driver['id'] in targets]
     found: dict[str, tuple[bytes, str]] = {}
     if not wanted:
         return found
 
+    def search(driver):
+        values = template_values(driver)
+        years = []
+        if driver['id'] in seasons:
+            first, last = seasons[driver['id']]
+            years = list(range(last, max(first, last - attempts + 1) - 1, -1))
+
+        for template in templates:
+            if any(name.lower() == 'year' for name in PLACEHOLDER.findall(template)):
+                urls = [render_template(template, values | {'year': str(year)}) for year in years]
+            else:
+                urls = [render_template(template, values)]
+            for url in urls:
+                data = try_get_image(url, remove_bg)
+                if data:
+                    return driver['id'], data, urlparse(url).netloc
+        return None
+
     with progress() as bar:
         task = bar.add_task('Trying the URL templates', total=len(wanted), found='')
-        for driver in wanted:
-            bar.update(task, description=f"Templates: {driver['fullName']}".ljust(44)[:44])
-            values = template_values(driver)
-            years = []
-            if driver['id'] in seasons:
-                first, last = seasons[driver['id']]
-                years = list(range(last, max(first, last - attempts + 1) - 1, -1))
-
-            for template in templates:
-                if any(name.lower() == 'year' for name in PLACEHOLDER.findall(template)):
-                    urls = [render_template(template, values | {'year': str(year)}) for year in years]
-                else:
-                    urls = [render_template(template, values)]
-                for url in urls:
-                    data = try_get_image(url, remove_bg)
-                    if data:
-                        found[driver['id']] = (data, urlparse(url).netloc)
-                        break
-                if driver['id'] in found:
-                    break
-            bar.update(task, advance=1, found=f'[green]{len(found)} found[/green]')
+        run_in_parallel(wanted, search, workers, bar, task, found)
     return found
 
 
@@ -239,9 +281,12 @@ def main() -> None:
     parser.add_argument('--force', action='store_true', help='download again the images that already exist')
     parser.add_argument('--remove-background', action='store_true', help='remove the background of the images that have one')
     parser.add_argument('--yes', action='store_true', help='do not ask before --force')
+    parser.add_argument('--workers', type=int, default=WORKERS, help='images downloaded at the same time (1 to go one by one)')
+    parser.add_argument('--delay', type=float, default=DELAY_SECONDS, help='seconds between two requests to the same site')
     parser.add_argument('--verbose', action='store_true', help="show the address of the images of the pages that don't match")
     args = parser.parse_args()
 
+    throttle.seconds = args.delay
     load_env_file()
     sitemap_urls = os.environ.get('DRIVERS_SITEMAP_URL', '').split()
     templates = os.environ.get('DRIVERS_URL_TEMPLATES', '').split()
@@ -273,9 +318,9 @@ def main() -> None:
 
     found: dict[str, tuple[bytes, str]] = {}
     if sitemap_urls:
-        found = fetch_from_sitemaps(sitemap_urls, os.environ.get('DRIVERS_PAGE_PATH', '/drivers/'), drivers, targets, args.remove_background, args.verbose)
+        found = fetch_from_sitemaps(sitemap_urls, os.environ.get('DRIVERS_PAGE_PATH', '/drivers/'), drivers, targets, args.remove_background, args.verbose, args.workers)
     if templates and targets - found.keys():
-        found |= fetch_from_templates(templates, drivers, targets - found.keys(), seasons, args.attempts, args.remove_background)
+        found |= fetch_from_templates(templates, drivers, targets - found.keys(), seasons, args.attempts, args.remove_background, args.workers)
 
     if found:
         with console.status(f'Framing {len(found)} images...'):
