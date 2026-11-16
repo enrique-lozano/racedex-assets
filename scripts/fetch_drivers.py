@@ -11,17 +11,19 @@ re-run to pick up new drivers with few requests. Options:
   --remove-background  remove the background of the images that are not transparent, instead of skipping them
                        (needs requirements-rembg.txt; about 20 seconds per image)
 
-The images come from these sources, in order. Both are optional, but at least one is needed. See scripts/README.md.
+The images come from these sources. Both are optional, but at least one is needed. See scripts/README.md.
 
-1. DRIVERS_SITEMAP_URL: sitemap(s) with one page per driver and an image in each (separated by spaces, if there are
-   several). The pages are matched to our drivers by name (see matching.py). DRIVERS_PAGE_PATH is the part of the URL
-   that the driver pages have in common, `/drivers/` by default.
-2. DRIVERS_FALLBACK_URLS: URL templates separated by spaces, tried in order for the drivers that are still missing.
-   The first one that returns a transparent image wins. A template can use:
+1. DRIVERS_URL_TEMPLATES: URL templates separated by spaces, tried in order for each driver. The first one that returns
+   a transparent image wins. A template can use:
      {id}    id of the driver in RaceDex
      {tla}   abbreviation of the driver, in capitals (VER)
      {ref}   first 3 letters of the first name + first 3 of the last name + 01, in capitals (MAXVER01)
      {year}  a season of the driver: from the last one back, `--attempts` seasons
+2. DRIVERS_SITEMAP_URL: for sites whose image URLs can't be built from a pattern. A sitemap is a file that many sites
+   publish, with their pages and the images of each one. Sitemap(s) with one page per driver and an image in each
+   (separated by spaces, if there are several). The pages are matched to our drivers by name (see matching.py).
+   DRIVERS_PAGE_PATH is the part of the URL that the driver pages have in common, `/drivers/` by default.
+   The sitemap goes first, and the templates are used for the drivers that it doesn't have.
 
 The variables can be in a `.env` file in the root of the repository (see .env.example), which is not committed.
 The drivers (and their seasons) are read from the CSV files of the RaceDex API on GitHub, see data.py.
@@ -181,9 +183,9 @@ def main() -> None:
 
     load_env_file()
     sitemap_urls = os.environ.get('DRIVERS_SITEMAP_URL', '').split()
-    templates = os.environ.get('DRIVERS_FALLBACK_URLS', '').split()
+    templates = os.environ.get('DRIVERS_URL_TEMPLATES', '').split()
     if not sitemap_urls and not templates:
-        sys.exit('Set DRIVERS_SITEMAP_URL and/or DRIVERS_FALLBACK_URLS (see the top of this file)')
+        sys.exit('Set DRIVERS_SITEMAP_URL and/or DRIVERS_URL_TEMPLATES (see the top of this file)')
 
     source = data_source(args.data)
     drivers = read_drivers(source)
@@ -208,7 +210,7 @@ def main() -> None:
     if templates:
         extra = fetch_from_templates(templates, drivers, targets - originals.keys(), seasons, args.attempts, args.remove_background)
         originals |= extra
-        print(f'fallback URLs: {len(extra)} images ({", ".join(sorted(extra)) or "-"})')
+        print(f'URL templates: {len(extra)} images ({", ".join(sorted(extra)) or "-"})')
 
     for driver_id, data in normalize(originals).items():
         (OUT_DIR / f'{driver_id}.webp').write_bytes(data)

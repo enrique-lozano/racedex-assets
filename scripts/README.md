@@ -43,22 +43,14 @@ python -I scripts/fetch_drivers.py
 
 It only downloads the drivers that don't have an image yet, so running it again costs few requests: one per sitemap, the 3 CSV files of the API and one per driver that is missing. The new images are normalized before they are saved.
 
-**Where the images come from.** There are two ways to find an image, and you can use one or both (the sitemap goes first):
+**Where the images come from.** You set it in `.env`, with one of these two options (or both):
 
-| | How it finds the image | Example |
+| | When to use it | Example |
 |---|---|---|
-| **Sitemap** | The site lists its pages and the image of each one, so nothing has to be built: the pages are matched to the drivers by name. Good for sites without predictable URLs. | `https://example.com/drivers-sitemap.xml` |
-| **URL templates** | The URL follows a pattern, so it is built with the data of the driver. Good for the drivers that the sitemap doesn't have. | `https://example.com/headshots/{year}/{tla}.png` |
+| **URL templates** (`DRIVERS_URL_TEMPLATES`) | The URL of the image follows a pattern, so it can be built with the data of the driver. The simple one. | `https://example.com/headshots/{year}/{tla}.png` |
+| **Sitemap** (`DRIVERS_SITEMAP_URL`) | The URLs don't follow a pattern. A sitemap is a file that many sites publish for search engines, with their pages and the images of each one (look for `/sitemap.xml` or `/robots.txt`). | `https://example.com/drivers-sitemap.xml` |
 
-They are set in `.env`:
-
-| Variable | Meaning |
-|---|---|
-| `DRIVERS_SITEMAP_URL` | One or more sitemaps (separated by spaces). |
-| `DRIVERS_PAGE_PATH` | Part of the URL that the pages of the drivers have in common, to ignore the other pages. `/drivers/` by default. |
-| `DRIVERS_FALLBACK_URLS` | URL templates (separated by spaces), for the drivers that the sitemap didn't have. The first one that returns a transparent image wins. |
-
-A template can use these placeholders (the sitemap doesn't use any):
+Several URLs are separated by spaces. With both, the sitemap goes first and the templates are used for the drivers that it doesn't have. A template can use these placeholders (the sitemap doesn't use any, because it is read as it is, and its pages are matched to the drivers by name):
 
 | Placeholder | Value | Example |
 |---|---|---|
@@ -67,7 +59,23 @@ A template can use these placeholders (the sitemap doesn't use any):
 | `{ref}` | 3 letters of the first name + 3 of the last name + `01`, in capitals | `MAXVER01` |
 | `{year}` | a season of the driver, from the last one back | `2024` |
 
-With `{year}` the last 3 seasons of the driver are tried (`--attempts` changes it).
+With `{year}` the last 3 seasons of the driver are tried (`--attempts` changes it). `DRIVERS_PAGE_PATH` (`/drivers/` by default) is the part of the URL that the pages of the drivers have in common in the sitemap, to ignore the other pages.
+
+**Examples of `.env`**
+
+```bash
+# Only templates: sites with a pattern, in order. The first one that has the driver wins
+DRIVERS_URL_TEMPLATES=https://example.com/drivers/{year}/{ref}.png https://example.org/headshots/{year}/{tla}.png
+
+# Only a sitemap: a site without a pattern, but with a list of its pages
+DRIVERS_SITEMAP_URL=https://example.net/drivers-sitemap.xml
+
+# Both: the sitemap has the history and the templates complete the drivers of the last seasons
+DRIVERS_SITEMAP_URL=https://example.net/drivers-sitemap.xml
+DRIVERS_URL_TEMPLATES=https://example.com/drivers/{year}/{ref}.png
+```
+
+The images that a site has for the drivers of the last seasons usually follow a pattern, and the ones of the history usually don't: that is why using both works best.
 
 **Options**
 
