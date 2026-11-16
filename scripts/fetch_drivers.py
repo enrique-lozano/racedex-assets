@@ -15,13 +15,13 @@ The images come from these sources. Both are optional, but at least one is neede
 
 1. DRIVERS_URL_TEMPLATES: URL templates separated by spaces, tried in order for each driver. The first one that returns
    a transparent image wins. A template can use:
-     {id}    id of the driver in RaceDex
-     {tla}   abbreviation of the driver, in capitals (VER)
-     {ref}   first 3 letters of the first name + first 3 of the last name + 01, in capitals (MAXVER01)
-     {ref_lower}  the same in lowercase (maxver01)
-     {initial}    first letter of the first name, in capitals (M)
-     {first}, {last}  first and last name without accents, with `_` between words (Max, Verstappen)
-     {year}  a season of the driver: from the last one back, `--attempts` seasons
+     {id}     id of the driver in RaceDex
+     {tla}    abbreviation of the driver (ver)
+     {ref}    first 3 letters of the first name + first 3 of the last name + 01 (maxver01)
+     {initial}      first letter of the first name (m)
+     {first}, {last}  first and last name without accents, with `_` between words (max, verstappen)
+     {year}   a season of the driver: from the last one back, `--attempts` seasons
+   The case of the placeholder sets the case of the value: {tla} ver, {TLA} VER, {Ref} Maxver01, {First} Max.
 2. DRIVERS_SITEMAP_URL: for sites whose image URLs can't be built from a pattern. A sitemap is a file that many sites
    publish, with their pages and the images of each one. Sitemap(s) with one page per driver and an image in each
    (separated by spaces, if there are several). The pages are matched to our drivers by name (see matching.py).
@@ -84,20 +84,42 @@ def try_get_image(url: str, remove_bg: bool = False) -> bytes | None:
     return data
 
 
+PLACEHOLDER = re.compile(r'\{(\w+)\}')
+
+
 def template_values(driver: dict[str, str]) -> dict[str, str]:
-    """What a URL template can use of a driver"""
-    letters = lambda name: slugify(name).replace('-', '').upper()[:3]
-    underscored = lambda name: '_'.join(w.capitalize() for w in slugify(name).split('-'))
-    ref = f"{letters(driver['firstName'])}{letters(driver['lastName'])}01"
+    """What a URL template can use of a driver, in lowercase (the template decides the case)"""
+    words = lambda name: slugify(name).split('-')
+    letters = lambda name: ''.join(words(name))[:3]
     return {
         'id': driver['id'],
-        'tla': driver['abbreviation'].upper(),
-        'ref': ref,
-        'ref_lower': ref.lower(),
-        'initial': slugify(driver['firstName'])[:1].upper(),
-        'first': underscored(driver['firstName']),
-        'last': underscored(driver['lastName']),
+        'tla': driver['abbreviation'],
+        'ref': f"{letters(driver['firstName'])}{letters(driver['lastName'])}01",
+        'initial': words(driver['firstName'])[0][:1],
+        'first': '_'.join(words(driver['firstName'])),
+        'last': '_'.join(words(driver['lastName'])),
     }
+
+
+def apply_case(value: str, spelled: str) -> str:
+    """The case of a placeholder sets the case of its value: {ref} maxver01, {REF} MAXVER01, {Ref} Maxver01"""
+    if spelled.isupper():
+        return value.upper()
+    if spelled.islower():
+        return value.lower()
+    return '_'.join(word.capitalize() for word in value.split('_'))
+
+
+def render_template(template: str, values: dict[str, str]) -> str:
+    return PLACEHOLDER.sub(lambda match: apply_case(values[match.group(1).lower()], match.group(1)), template)
+
+
+def check_templates(templates: list[str]) -> None:
+    valid = set(template_values({'id': '', 'abbreviation': '', 'firstName': 'a', 'lastName': 'a'})) | {'year'}
+    for template in templates:
+        unknown = {name for name in PLACEHOLDER.findall(template) if name.lower() not in valid}
+        if unknown:
+            sys.exit(f'Unknown placeholder {{{sorted(unknown)[0]}}} in {template}\nThe valid ones are: {", ".join(sorted(valid))}')
 
 
 def sitemap_pages(sitemap_url: str, page_path: str) -> dict[str, str]:
@@ -160,7 +182,10 @@ def fetch_from_templates(
             years = list(range(last, max(first, last - attempts + 1) - 1, -1))
 
         for template in templates:
-            urls = [template.format(**values, year=year) for year in years] if '{year}' in template else [template.format(**values)]
+            if any(name.lower() == 'year' for name in PLACEHOLDER.findall(template)):
+                urls = [render_template(template, values | {'year': str(year)}) for year in years]
+            else:
+                urls = [render_template(template, values)]
             data = next(filter(None, (try_get_image(url, remove_bg) for url in urls)), None)
             if data:
                 found[driver['id']] = data
@@ -198,12 +223,13 @@ def main() -> None:
     load_env_file()
     sitemap_urls = os.environ.get('DRIVERS_SITEMAP_URL', '').split()
     templates = os.environ.get('DRIVERS_URL_TEMPLATES', '').split()
+    check_templates(templates)
     if not sitemap_urls and not templates:
         sys.exit('Set DRIVERS_SITEMAP_URL and/or DRIVERS_URL_TEMPLATES (see the top of this file)')
 
     source = data_source(args.data)
     drivers = read_drivers(source)
-    seasons = driver_seasons(source) if any('{year}' in template for template in templates) else {}
+    seasons = driver_seasons(source) if any('{year}' in template.lower() for template in templates) else {}
 
     OUT_DIR.mkdir(exist_ok=True)
     targets = {driver['id'] for driver in drivers}
