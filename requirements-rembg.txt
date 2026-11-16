@@ -1,0 +1,2 @@
+# Only for `add_photo.py --remove-background` (the first run downloads a model of about 1 GB)
+rembg[cpu]>=2.0.60
