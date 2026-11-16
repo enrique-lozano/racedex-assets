@@ -1,10 +1,17 @@
 """Downloads the driver cut-outs that are missing into drivers/{driverId}.webp, normalizing them (see normalize.py)
 
-Usage: python -I scripts/fetch_drivers.py [--data <address of the CSV files>] [--attempts 3]
+Usage: python -I scripts/fetch_drivers.py [--only <driverId> ...] [--force] [--remove-background] [--yes]
+                                          [--data <address of the CSV files>] [--attempts 3]
 
 Drivers that already have an image are skipped (also the ones added by hand with add_photo.py), so the script can be
-re-run to pick up new drivers. To download one again, delete its image. The images come from these sources, in order.
-Both are optional, but at least one is needed. See scripts/README.md for how to set them.
+re-run to pick up new drivers with few requests. Options:
+  --only ID ...        only these drivers
+  --force              download again (and replace) the images that already exist. It can mean hundreds of requests
+                       to the sites of the sources, so it asks before, unless there are only a few drivers or --yes
+  --remove-background  remove the background of the images that are not transparent, instead of skipping them
+                       (needs requirements-rembg.txt; about 20 seconds per image)
+
+The images come from these sources, in order. Both are optional, but at least one is needed. See scripts/README.md.
 
 1. DRIVERS_SITEMAP_URL: sitemap(s) with one page per driver and an image in each (separated by spaces, if there are
    several). The pages are matched to our drivers by name (see matching.py). DRIVERS_PAGE_PATH is the part of the URL
@@ -34,12 +41,14 @@ from PIL import Image
 
 # `python -I` doesn't add the script's directory to the path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from background import remove_background  # noqa: E402
 from data import data_source, driver_seasons, load_env_file, read_drivers  # noqa: E402
 from matching import match_pages, slugify  # noqa: E402
 from normalize import has_transparency, normalize  # noqa: E402
 
 from data import USER_AGENT  # noqa: E402
 DELAY_SECONDS = 0.3
+CONFIRM_FROM = 20  # --force asks for confirmation from this number of drivers
 MIN_IMAGE_SIZE = 200
 ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = ROOT / 'drivers'
@@ -50,8 +59,8 @@ def get(url: str) -> bytes:
     return response.content
 
 
-def try_get_image(url: str) -> bytes | None:
-    """The image if the URL exists and is a big enough transparent image, otherwise None"""
+def try_get_image(url: str, remove_bg: bool = False) -> bytes | None:
+    """The image if the URL exists and is a big enough transparent image (or it can be made transparent), otherwise None"""
     try:
         data = get(url)
         image = Image.open(io.BytesIO(data))
@@ -61,7 +70,13 @@ def try_get_image(url: str) -> bytes | None:
     finally:
         time.sleep(DELAY_SECONDS)
 
-    return data if min(image.size) >= MIN_IMAGE_SIZE and has_transparency(image) else None
+    if min(image.size) < MIN_IMAGE_SIZE:
+        return None
+    if not has_transparency(image):
+        if not remove_bg:
+            return None
+        data = remove_background(data)
+    return data
 
 
 def reference(driver: dict[str, str]) -> str:
@@ -81,7 +96,9 @@ def sitemap_pages(sitemap_url: str, page_path: str) -> dict[str, str]:
     return pages
 
 
-def fetch_from_sitemaps(sitemap_urls: list[str], page_path: str, drivers: list[dict[str, str]], missing: set[str]) -> dict[str, bytes]:
+def fetch_from_sitemaps(
+    sitemap_urls: list[str], page_path: str, drivers: list[dict[str, str]], missing: set[str], remove_bg: bool
+) -> dict[str, bytes]:
     pages: dict[str, str] = {}
     for sitemap_url in sitemap_urls:
         pages |= sitemap_pages(sitemap_url, page_path)
@@ -94,11 +111,11 @@ def fetch_from_sitemaps(sitemap_urls: list[str], page_path: str, drivers: list[d
     found = {}
     for match in matches:
         if match.driver_id in missing:
-            data = try_get_image(pages[match.slug])
+            data = try_get_image(pages[match.slug], remove_bg)
             if data:
                 found[match.driver_id] = data
             else:
-                print(f'  {match.slug}: not a valid transparent image')
+                print(f'  {match.slug}: not a valid image (or not transparent: use --remove-background)')
 
     if unmatched:
         print(f'{len(unmatched)} pages without a driver in our data (add one with add_photo.py if it is a driver of ours):')
@@ -113,6 +130,7 @@ def fetch_from_templates(
     missing: set[str],
     seasons: dict[str, tuple[int, int]],
     attempts: int,
+    remove_bg: bool,
 ) -> dict[str, bytes]:
     found = {}
     for driver in drivers:
@@ -127,17 +145,38 @@ def fetch_from_templates(
 
         for template in templates:
             urls = [template.format(**values, year=year) for year in years] if '{year}' in template else [template.format(**values)]
-            data = next(filter(None, map(try_get_image, urls)), None)
+            data = next(filter(None, (try_get_image(url, remove_bg) for url in urls)), None)
             if data:
                 found[driver['id']] = data
                 break
     return found
 
 
+def confirm_force(count: int, hosts: set[str]) -> None:
+    """Asks before downloading again many images, which are many requests to the sites of the sources"""
+    print(
+        f'--force downloads again (and replaces) the images of {count} drivers, also the ones added by hand.\n'
+        f'That is hundreds of requests to: {", ".join(sorted(hosts))}.\n'
+        'Check that those sites have no rate limits and that this is expected.'
+    )
+    if not sys.stdin.isatty():
+        sys.exit('Not an interactive terminal: use --yes to continue')
+    try:
+        answer = input('Continue? [y/N] ')
+    except EOFError:
+        answer = ''
+    if answer.strip().lower() != 'y':
+        sys.exit('Cancelled')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--data', help='address of the folder with the CSV files of the API (a URL or a folder)')
     parser.add_argument('--attempts', type=int, default=3, help='seasons tried for {year}, from the last one back')
+    parser.add_argument('--only', nargs='+', metavar='ID', help='only these drivers')
+    parser.add_argument('--force', action='store_true', help='download again the images that already exist')
+    parser.add_argument('--remove-background', action='store_true', help='remove the background of the images that have one')
+    parser.add_argument('--yes', action='store_true', help='do not ask before --force')
     args = parser.parse_args()
 
     load_env_file()
@@ -151,15 +190,23 @@ def main() -> None:
     seasons = driver_seasons(source) if any('{year}' in template for template in templates) else {}
 
     OUT_DIR.mkdir(exist_ok=True)
-    have = {path.stem for path in OUT_DIR.glob('*.webp')}
-    missing = {driver['id'] for driver in drivers} - have
-    originals: dict[str, bytes] = {}
+    targets = {driver['id'] for driver in drivers}
+    if args.only:
+        unknown = set(args.only) - targets
+        if unknown:
+            sys.exit(f'Not drivers of RaceDex: {", ".join(sorted(unknown))}')
+        targets = set(args.only)
+    if not args.force:
+        targets -= {path.stem for path in OUT_DIR.glob('*.webp')}
+    elif len(targets) >= CONFIRM_FROM and not args.yes:
+        confirm_force(len(targets), {urlparse(url).netloc for url in sitemap_urls + templates})
 
+    originals: dict[str, bytes] = {}
     if sitemap_urls:
-        originals = fetch_from_sitemaps(sitemap_urls, os.environ.get('DRIVERS_PAGE_PATH', '/drivers/'), drivers, missing)
+        originals = fetch_from_sitemaps(sitemap_urls, os.environ.get('DRIVERS_PAGE_PATH', '/drivers/'), drivers, targets, args.remove_background)
         print(f'sitemap: {len(originals)} images')
     if templates:
-        extra = fetch_from_templates(templates, drivers, missing - originals.keys(), seasons, args.attempts)
+        extra = fetch_from_templates(templates, drivers, targets - originals.keys(), seasons, args.attempts, args.remove_background)
         originals |= extra
         print(f'fallback URLs: {len(extra)} images ({", ".join(sorted(extra)) or "-"})')
 
