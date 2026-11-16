@@ -1,13 +1,14 @@
 """Downloads the driver cut-outs that are missing into drivers/{driverId}.webp, normalizing them (see normalize.py)
 
 Usage: python -I scripts/fetch_drivers.py [--only <driverId> ...] [--force] [--remove-background] [--yes]
-                                          [--data <address of the CSV files>] [--attempts 3]
+                                          [--data <address of the CSV files>] [--attempts 3] [--verbose]
 
 Drivers that already have an image are skipped (also the ones added by hand with add_photo.py), so the script can be
 re-run to pick up new drivers with few requests. Options:
   --only ID ...        only these drivers
   --force              download again (and replace) the images that already exist. It can mean hundreds of requests
                        to the sites of the sources, so it asks before, unless there are only a few drivers or --yes
+  --verbose            show the address of the images of the pages that don't match a driver
   --remove-background  remove the background of the images that are not transparent, instead of skipping them
                        (needs requirements-rembg.txt; about 20 seconds per image)
 
@@ -47,19 +48,23 @@ from PIL import Image
 # `python -I` doesn't add the script's directory to the path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from background import remove_background  # noqa: E402
-from data import data_source, driver_seasons, load_env_file, read_drivers  # noqa: E402
+from data import USER_AGENT, data_source, driver_seasons, load_env_file, read_drivers  # noqa: E402
 from matching import match_pages, slugify  # noqa: E402
 from normalize import has_transparency, normalize  # noqa: E402
+from ui import console, fail, info, ok, progress, table, warn  # noqa: E402
 
-from data import USER_AGENT  # noqa: E402
-DELAY_SECONDS = 0.3
+DELAY_SECONDS = 0.3  # between requests, so the sites of the sources are not overloaded
+TIMEOUT_SECONDS = 15
 CONFIRM_FROM = 20  # --force asks for confirmation from this number of drivers
 MIN_IMAGE_SIZE = 200
 ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = ROOT / 'drivers'
 
+PLACEHOLDER = re.compile(r'\{(\w+)\}')
+
+
 def get(url: str) -> bytes:
-    response = requests.get(url, headers={'User-Agent': USER_AGENT}, timeout=30)
+    response = requests.get(url, headers={'User-Agent': USER_AGENT}, timeout=TIMEOUT_SECONDS)
     response.raise_for_status()
     return response.content
 
@@ -82,9 +87,6 @@ def try_get_image(url: str, remove_bg: bool = False) -> bytes | None:
             return None
         data = remove_background(data)
     return data
-
-
-PLACEHOLDER = re.compile(r'\{(\w+)\}')
 
 
 def template_values(driver: dict[str, str]) -> dict[str, str]:
@@ -120,7 +122,7 @@ def check_templates(templates: list[str]) -> None:
     for template in templates:
         unknown = {name for name in PLACEHOLDER.findall(template) if name.lower() not in valid}
         if unknown:
-            sys.exit(f'Unknown placeholder {{{sorted(unknown)[0]}}} in {template}\nThe valid ones are: {", ".join(sorted(valid))}')
+            fail(f'Unknown placeholder {{{sorted(unknown)[0]}}} in {template}\nThe valid ones are: {", ".join(sorted(valid))}')
 
 
 def sitemap_pages(sitemap_url: str, page_path: str) -> dict[str, str]:
@@ -136,79 +138,97 @@ def sitemap_pages(sitemap_url: str, page_path: str) -> dict[str, str]:
 
 
 def fetch_from_sitemaps(
-    sitemap_urls: list[str], page_path: str, drivers: list[dict[str, str]], missing: set[str], remove_bg: bool
-) -> dict[str, bytes]:
+    sitemap_urls: list[str], page_path: str, drivers: list[dict[str, str]], targets: set[str], remove_bg: bool, verbose: bool
+) -> dict[str, tuple[bytes, str]]:
+    """driver id -> (image, where it came from)"""
     pages: dict[str, str] = {}
-    for sitemap_url in sitemap_urls:
-        pages |= sitemap_pages(sitemap_url, page_path)
+    with console.status('Reading the sitemap...'):
+        for sitemap_url in sitemap_urls:
+            pages |= sitemap_pages(sitemap_url, page_path)
+        matches, unmatched = match_pages(sorted(pages), drivers)
 
-    matches, unmatched = match_pages(sorted(pages), drivers)
-    guessed = [f'{match.slug} -> {match.driver_id}' for match in matches if not match.exact and match.driver_id in missing]
+    names = {driver['id']: driver['fullName'] for driver in drivers}
+    info(f'{len(pages)} pages in the sitemap, {len(matches)} of them are drivers of ours')
+    guessed = [match for match in matches if not match.exact and match.driver_id in targets]
     if guessed:
-        print('matched by similarity, check them:', ', '.join(guessed))
+        warn('Matched by similarity, check them: ' + ', '.join(f'{m.slug} -> {names[m.driver_id]}' for m in guessed))
 
-    found = {}
-    for match in matches:
-        if match.driver_id in missing:
-            data = try_get_image(pages[match.slug], remove_bg)
-            if data:
-                found[match.driver_id] = data
-            else:
-                print(f'  {match.slug}: not a valid image (or not transparent: use --remove-background)')
+    wanted = [match for match in matches if match.driver_id in targets]
+    found: dict[str, tuple[bytes, str]] = {}
+    if wanted:
+        with progress() as bar:
+            task = bar.add_task('Downloading from the sitemap', total=len(wanted), found='')
+            for match in wanted:
+                bar.update(task, description=f'Sitemap: {names[match.driver_id]}'.ljust(44)[:44])
+                data = try_get_image(pages[match.slug], remove_bg)
+                if data:
+                    found[match.driver_id] = (data, urlparse(pages[match.slug]).netloc)
+                else:
+                    bar.console.print(f'[yellow]![/yellow] {match.slug}: not a valid image (not transparent? use --remove-background)')
+                bar.update(task, advance=1, found=f'[green]{len(found)} found[/green]')
 
     if unmatched:
-        print(f'{len(unmatched)} pages without a driver in our data (add one with add_photo.py if it is a driver of ours):')
-        for slug in unmatched:
-            print(f'  {slug}  {pages[slug]}')
+        warn(f"{len(unmatched)} pages of the sitemap are not drivers of ours (add one with add_photo.py if it is): {', '.join(unmatched)}")
+        if verbose:
+            listing = table('Page', 'Image')
+            for slug in unmatched:
+                listing.add_row(slug, pages[slug])
+            console.print(listing)
     return found
 
 
 def fetch_from_templates(
     templates: list[str],
     drivers: list[dict[str, str]],
-    missing: set[str],
+    targets: set[str],
     seasons: dict[str, tuple[int, int]],
     attempts: int,
     remove_bg: bool,
-) -> dict[str, bytes]:
-    found = {}
-    for driver in drivers:
-        if driver['id'] not in missing:
-            continue
+) -> dict[str, tuple[bytes, str]]:
+    wanted = [driver for driver in drivers if driver['id'] in targets]
+    found: dict[str, tuple[bytes, str]] = {}
+    if not wanted:
+        return found
 
-        values = template_values(driver)
-        years = []
-        if driver['id'] in seasons:
-            first, last = seasons[driver['id']]
-            years = list(range(last, max(first, last - attempts + 1) - 1, -1))
+    with progress() as bar:
+        task = bar.add_task('Trying the URL templates', total=len(wanted), found='')
+        for driver in wanted:
+            bar.update(task, description=f"Templates: {driver['fullName']}".ljust(44)[:44])
+            values = template_values(driver)
+            years = []
+            if driver['id'] in seasons:
+                first, last = seasons[driver['id']]
+                years = list(range(last, max(first, last - attempts + 1) - 1, -1))
 
-        for template in templates:
-            if any(name.lower() == 'year' for name in PLACEHOLDER.findall(template)):
-                urls = [render_template(template, values | {'year': str(year)}) for year in years]
-            else:
-                urls = [render_template(template, values)]
-            data = next(filter(None, (try_get_image(url, remove_bg) for url in urls)), None)
-            if data:
-                found[driver['id']] = data
-                break
+            for template in templates:
+                if any(name.lower() == 'year' for name in PLACEHOLDER.findall(template)):
+                    urls = [render_template(template, values | {'year': str(year)}) for year in years]
+                else:
+                    urls = [render_template(template, values)]
+                for url in urls:
+                    data = try_get_image(url, remove_bg)
+                    if data:
+                        found[driver['id']] = (data, urlparse(url).netloc)
+                        break
+                if driver['id'] in found:
+                    break
+            bar.update(task, advance=1, found=f'[green]{len(found)} found[/green]')
     return found
 
 
 def confirm_force(count: int, hosts: set[str]) -> None:
     """Asks before downloading again many images, which are many requests to the sites of the sources"""
-    print(
-        f'--force downloads again (and replaces) the images of {count} drivers, also the ones added by hand.\n'
-        f'That is hundreds of requests to: {", ".join(sorted(hosts))}.\n'
-        'Check that those sites have no rate limits and that this is expected.'
-    )
+    warn(f'--force downloads again (and replaces) the images of {count} drivers, also the ones added by hand.')
+    console.print(f'  That is hundreds of requests to: [bold]{", ".join(sorted(hosts))}[/bold].')
+    console.print('  Check that those sites have no rate limits and that this is expected.')
     if not sys.stdin.isatty():
-        sys.exit('Not an interactive terminal: use --yes to continue')
+        fail('Not an interactive terminal: use --yes to continue')
     try:
         answer = input('Continue? [y/N] ')
     except EOFError:
         answer = ''
     if answer.strip().lower() != 'y':
-        sys.exit('Cancelled')
+        fail('Cancelled')
 
 
 def main() -> None:
@@ -219,6 +239,7 @@ def main() -> None:
     parser.add_argument('--force', action='store_true', help='download again the images that already exist')
     parser.add_argument('--remove-background', action='store_true', help='remove the background of the images that have one')
     parser.add_argument('--yes', action='store_true', help='do not ask before --force')
+    parser.add_argument('--verbose', action='store_true', help="show the address of the images of the pages that don't match")
     args = parser.parse_args()
 
     load_env_file()
@@ -226,39 +247,54 @@ def main() -> None:
     templates = os.environ.get('DRIVERS_URL_TEMPLATES', '').split()
     check_templates(templates)
     if not sitemap_urls and not templates:
-        sys.exit('Set DRIVERS_SITEMAP_URL and/or DRIVERS_URL_TEMPLATES (see the top of this file)')
+        fail('Set DRIVERS_SITEMAP_URL and/or DRIVERS_URL_TEMPLATES, in a .env file (see .env.example and scripts/README.md)')
 
-    source = data_source(args.data)
-    drivers = read_drivers(source)
-    seasons = driver_seasons(source) if any('{year}' in template.lower() for template in templates) else {}
+    with console.status('Reading the drivers of RaceDex...'):
+        source = data_source(args.data)
+        drivers = read_drivers(source)
+        seasons = driver_seasons(source) if any('{year}' in template.lower() for template in templates) else {}
 
     OUT_DIR.mkdir(exist_ok=True)
     targets = {driver['id'] for driver in drivers}
     if args.only:
         unknown = set(args.only) - targets
         if unknown:
-            sys.exit(f'Not drivers of RaceDex: {", ".join(sorted(unknown))}')
+            fail(f'Not drivers of RaceDex: {", ".join(sorted(unknown))}')
         targets = set(args.only)
     if not args.force:
         targets -= {path.stem for path in OUT_DIR.glob('*.webp')}
     elif len(targets) >= CONFIRM_FROM and not args.yes:
         confirm_force(len(targets), {urlparse(url).netloc for url in sitemap_urls + templates})
 
-    originals: dict[str, bytes] = {}
+    if not targets:
+        ok('Every driver has an image already (use --force to download them again)')
+        return
+    info(f'Looking for the image of {len(targets)} drivers')
+
+    found: dict[str, tuple[bytes, str]] = {}
     if sitemap_urls:
-        originals = fetch_from_sitemaps(sitemap_urls, os.environ.get('DRIVERS_PAGE_PATH', '/drivers/'), drivers, targets, args.remove_background)
-        print(f'sitemap: {len(originals)} images')
-    if templates:
-        extra = fetch_from_templates(templates, drivers, targets - originals.keys(), seasons, args.attempts, args.remove_background)
-        originals |= extra
-        print(f'URL templates: {len(extra)} images ({", ".join(sorted(extra)) or "-"})')
+        found = fetch_from_sitemaps(sitemap_urls, os.environ.get('DRIVERS_PAGE_PATH', '/drivers/'), drivers, targets, args.remove_background, args.verbose)
+    if templates and targets - found.keys():
+        found |= fetch_from_templates(templates, drivers, targets - found.keys(), seasons, args.attempts, args.remove_background)
 
-    for driver_id, data in normalize(originals).items():
-        (OUT_DIR / f'{driver_id}.webp').write_bytes(data)
+    if found:
+        with console.status(f'Framing {len(found)} images...'):
+            framed = normalize({driver_id: data for driver_id, (data, _) in found.items()})
+        for driver_id, data in framed.items():
+            (OUT_DIR / f'{driver_id}.webp').write_bytes(data)
 
-    covered = {path.stem for path in OUT_DIR.glob('*.webp')}
-    print(f'drivers with image {len(covered)}/{len(drivers)}')
+    names = {driver['id']: driver['fullName'] for driver in drivers}
+    if found:
+        ok(f'{len(found)} new images: ' + ', '.join(f'{names[driver_id]} ({origin})' for driver_id, (_, origin) in sorted(found.items())))
+    left = targets - found.keys()
+    if left:
+        warn(f'{len(left)} drivers still without an image (python -I scripts/report_missing.py lists them)')
+    total = len({path.stem for path in OUT_DIR.glob('*.webp')})
+    console.print(f'\n[bold]{total}[/bold] of {len(drivers)} drivers have an image')
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        fail('Interrupted')

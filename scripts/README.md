@@ -92,6 +92,7 @@ The images that a site has for the drivers of the last seasons usually follow a 
 | `--force` | Downloads again (and replaces) the images that already exist, also the ones added by hand. |
 | `--yes` | With `--force`, doesn't ask before continuing. |
 | `--remove-background` | Removes the background of the images that have one, instead of skipping them (see below). |
+| `--verbose` | Shows the address of the images of the sitemap pages that are not drivers of ours. |
 | `--data` | Where the drivers are read from (see above). |
 
 `--force` for 20 drivers or more can mean hundreds of requests to the sites you set in `.env`, so it asks before:
@@ -106,6 +107,8 @@ Continue? [y/N]
 To download again only some drivers, use `--only` (`python -I scripts/fetch_drivers.py --only prost senna --force`).
 
 **Sitemap only: how the pages are matched to the drivers.** The URL templates don't need this, because each URL is built from the data of a driver we already know. A sitemap only gives pages and images, so they are matched by name, without anything to configure. First the names that are exactly the same, then the ones that look alike: `geoff-crossley` is Geoffrey Crossley, `aj-foyt` is Anthony Joseph Foyt and `zhou-guanyu` is Guanyu Zhou. The ones matched like this are printed, so you can check them. If two drivers fit equally well, or the driver is not in our data, the page is left out and printed with the address of its image. If it is a driver of ours, add it by hand with `add_photo.py <driverId> <that address>`. The rules are in [`matching.py`](matching.py), and its tests run with `python -m unittest discover tests`.
+
+The scripts show their progress with colors. Set `NO_COLOR=1` to turn the colors off (they are off by default when the output goes to a file). A run that looks for ~60 drivers makes about 200 requests, with a short pause between each one, so it takes a couple of minutes.
 
 ## Adding a photo by hand
 

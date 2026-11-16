@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from background import remove_background  # noqa: E402
 from data import data_source, load_env_file, read_drivers  # noqa: E402
 from fetch_drivers import get  # noqa: E402
+from ui import console, fail, ok  # noqa: E402
 from normalize import has_transparency, normalize  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,22 +44,25 @@ def main() -> None:
     if not args.skip_check:
         load_env_file()
         if args.driver_id not in {driver['id'] for driver in read_drivers(data_source(args.data))}:
-            sys.exit(f'{args.driver_id} is not a driver id of RaceDex (use --skip-check to add it anyway)')
+            fail(f'{args.driver_id} is not a driver id of RaceDex (use --skip-check to add it anyway)')
 
     target = ROOT / 'drivers' / f'{args.driver_id}.webp'
     if target.exists() and not args.force:
-        sys.exit(f'drivers/{args.driver_id}.webp already exists: use --force to replace it')
+        fail(f'drivers/{args.driver_id}.webp already exists: use --force to replace it')
 
-    data = read_source(args.source)
+    with console.status('Reading the image...'):
+        data = read_source(args.source)
     if args.remove_background:
-        data = remove_background(data)
+        with console.status('Removing the background (about 20 seconds)...'):
+            data = remove_background(data)
 
     image = Image.open(io.BytesIO(data))
     if not has_transparency(image):
-        sys.exit('The image has no transparent background: use --remove-background')
+        fail('The image has no transparent background: use --remove-background')
 
-    target.write_bytes(normalize({args.driver_id: data})[args.driver_id])
-    print(f'drivers/{args.driver_id}.webp written')
+    with console.status('Framing the image...'):
+        target.write_bytes(normalize({args.driver_id: data})[args.driver_id])
+    ok(f'drivers/{args.driver_id}.webp written')
 
 
 if __name__ == '__main__':
