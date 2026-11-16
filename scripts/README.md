@@ -105,7 +105,7 @@ Continue? [y/N]
 
 To download again only some drivers, use `--only` (`python -I scripts/fetch_drivers.py --only prost senna --force`).
 
-**How the pages are matched to the drivers.** By name, without anything to configure. First the names that are exactly the same, then the ones that look alike: `geoff-crossley` is Geoffrey Crossley, `aj-foyt` is Anthony Joseph Foyt and `zhou-guanyu` is Guanyu Zhou. The ones matched like this are printed, so you can check them. If two drivers fit equally well, or the driver is not in our data, the page is left out and printed with the address of its image. If it is a driver of ours, add it by hand with `add_photo.py <driverId> <that address>`. The rules are in [`matching.py`](matching.py), and its tests run with `python -m unittest discover tests`.
+**Sitemap only: how the pages are matched to the drivers.** The URL templates don't need this, because each URL is built from the data of a driver we already know. A sitemap only gives pages and images, so they are matched by name, without anything to configure. First the names that are exactly the same, then the ones that look alike: `geoff-crossley` is Geoffrey Crossley, `aj-foyt` is Anthony Joseph Foyt and `zhou-guanyu` is Guanyu Zhou. The ones matched like this are printed, so you can check them. If two drivers fit equally well, or the driver is not in our data, the page is left out and printed with the address of its image. If it is a driver of ours, add it by hand with `add_photo.py <driverId> <that address>`. The rules are in [`matching.py`](matching.py), and its tests run with `python -m unittest discover tests`.
 
 ## Adding a photo by hand
 
