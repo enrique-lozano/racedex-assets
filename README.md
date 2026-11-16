@@ -26,9 +26,20 @@ https://enrique-lozano.github.io/racedex-assets/drivers/{driverId}.webp
 
 The images come from several public sources, and their original authors are not always known. They are not licensed under this repository's terms and their copyright belongs to their respective owners. If you own one and want it removed, open an issue.
 
-## Scripts
+## Add a photo
 
-The images are made and maintained with a few Python scripts: downloading the missing ones, adding a photo by hand (even one with a busy background) or listing the drivers without a photo. See [`scripts/README.md`](scripts/README.md).
+Missing a driver, or have a better photo? With the [scripts](scripts/README.md) it is one command (Python 3.10+):
+
+```bash
+pip install -r requirements.txt
+python -I scripts/add_photo.py <driverId> path/or/url/to/photo.png
+```
+
+The photo is framed like the rest and saved in `drivers/`. If it has a background, add `--remove-background`; to replace an existing one, add `--force`. Then open a pull request. There are more scripts, like `fetch_drivers.py`, in [`scripts/README.md`](scripts/README.md).
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the format of the commits and how to add images.
 
 ## Used by
 
