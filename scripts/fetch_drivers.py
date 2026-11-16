@@ -2,20 +2,21 @@
 
 Usage: python -I scripts/fetch_drivers.py <drivers.csv of the RaceDex API> [--db racedex.db] [--attempts 3]
 
-The images come from these sources, in this order. A driver that already has an image is skipped (also the ones added
-by hand with add_photo.py), so the script can be re-run to pick up new drivers. To download one again, delete its image.
+Drivers that already have an image are skipped (also the ones added by hand with add_photo.py), so the script can be
+re-run to pick up new drivers. To download one again, delete its image. The images come from these sources, in order.
+Both are optional, but at least one is needed. See scripts/README.md for how to set them.
 
-1. DRIVERS_SITEMAP_URL (environment variable): a sitemap with one page per driver, and an image in each. The pages are
-   matched to our driver ids by name; the ones that don't match are in SLUG_OVERRIDES.
-2. DRIVERS_FALLBACK_URLS (environment variable): URL templates separated by spaces, tried in order for the drivers
-   that are still missing. The first one that returns a transparent image wins. A template can use:
+1. DRIVERS_SITEMAP_URL: sitemap(s) with one page per driver and an image in each (separated by spaces, if there are
+   several). The pages are matched to our drivers by name (see matching.py). DRIVERS_PAGE_PATH is the part of the URL
+   that the driver pages have in common, `/drivers/` by default.
+2. DRIVERS_FALLBACK_URLS: URL templates separated by spaces, tried in order for the drivers that are still missing.
+   The first one that returns a transparent image wins. A template can use:
      {id}    id of the driver in RaceDex
      {tla}   abbreviation of the driver, in capitals (VER)
      {ref}   first 3 letters of the first name + first 3 of the last name + 01, in capitals (MAXVER01)
      {year}  a season of the driver: from the last one back, `--attempts` seasons (needs the database)
 
-Both variables are optional, but at least one is needed. They can be set in a `.env` file in the root of the repository
-(see .env.example), which is not committed.
+The variables can be in a `.env` file in the root of the repository (see .env.example), which is not committed.
 """
 
 import argparse
@@ -26,14 +27,15 @@ import re
 import sqlite3
 import sys
 import time
-import unicodedata
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 from PIL import Image
 
 # `python -I` doesn't add the script's directory to the path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from matching import match_pages, slugify  # noqa: E402
 from normalize import has_transparency, normalize  # noqa: E402
 
 USER_AGENT = 'RaceDexAssets/1.0 (https://github.com/enrique-lozano/racedex-assets)'
@@ -41,30 +43,6 @@ DELAY_SECONDS = 0.3
 MIN_IMAGE_SIZE = 200
 ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = ROOT / 'drivers'
-
-# Page slug on the site -> our driver id
-SLUG_OVERRIDES = {
-    'prince-bira': 'bhanudej',
-    'alessandro-de-tomaso': 'de-tomaso',
-    'azdrubal-bayardo': 'fontes-bayardo',
-    'dave-walker': 'david-walker',
-    'francisco-godia': 'godia',
-    'geoff-crossley': 'crossley',
-    'gunther-bechem': 'bechem',
-    'aj-foyt': 'foyt',
-    'jerome-dambrosio': 'dambrosio',
-    'jerry-unser': 'unser-jr',
-    'ken-mcalpine': 'mcalpine',
-    'pat-oconnor': 'oconnor',
-    'tim-mayer': 'mayer',
-    'kurt-ahrens': 'ahrens',
-    'giuseppe-farina': 'farina',
-    'oscar-galvez': 'galvez',
-    'carlos-sainz': 'sainz',
-    'zhou-guanyu': 'zhou',
-}
-
-
 
 def load_env_file() -> None:
     """Sets the variables of `.env` that are not already set"""
@@ -97,11 +75,6 @@ def try_get_image(url: str) -> bytes | None:
     return data if min(image.size) >= MIN_IMAGE_SIZE and has_transparency(image) else None
 
 
-def slugify(text: str) -> str:
-    ascii_text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode().lower()
-    return re.sub(r'[^a-z0-9]+', '-', ascii_text).strip('-')
-
-
 def reference(driver: dict[str, str]) -> str:
     letters = lambda name: slugify(name).replace('-', '').upper()[:3]
     return f"{letters(driver['firstName'])}{letters(driver['lastName'])}01"
@@ -120,36 +93,42 @@ def driver_seasons(database: Path) -> dict[str, tuple[int, int]]:
     return {driver_id: (first, last) for driver_id, first, last in rows}
 
 
-def fetch_from_sitemap(sitemap_url: str, drivers: list[dict[str, str]], missing: set[str]) -> tuple[dict[str, bytes], list[str]]:
-    ids_by_name: dict[str, set[str]] = {}
-    for driver in drivers:
-        names = {driver['name'], driver['fullName'], f"{driver['firstName']} {driver['lastName']}"}
-        for name in names:
-            ids_by_name.setdefault(slugify(name), set()).add(driver['id'])
-
-    sitemap = get(sitemap_url).decode()
+def sitemap_pages(sitemap_url: str, page_path: str) -> dict[str, str]:
+    """slug of the page -> URL of its image, for the pages with an image whose URL has `page_path`"""
     pages = {}
-    for block in re.findall(r'<url>(.*?)</url>', sitemap, flags=re.S):
-        slug = re.search(r'/drivers/([^/<]+)/</loc>', block)
+    for block in re.findall(r'<url>(.*?)</url>', get(sitemap_url).decode(), flags=re.S):
+        page = re.search(r'<loc>([^<]+)</loc>', block)
         image = re.search(r'<image:loc>([^<]+)</image:loc>', block)
-        if slug and image:
-            pages[slug.group(1)] = image.group(1)
+        if page and image and page_path in urlparse(page.group(1)).path:
+            slug = urlparse(page.group(1)).path.rstrip('/').rsplit('/', 1)[-1]
+            pages[slug] = image.group(1).strip()
+    return pages
 
-    found, unmatched = {}, []
-    for slug, image_url in sorted(pages.items()):
-        driver_id = SLUG_OVERRIDES.get(slug)
-        if not driver_id:
-            ids = ids_by_name.get(slug, set())
-            driver_id = next(iter(ids)) if len(ids) == 1 else None
-        if not driver_id:
-            unmatched.append(slug)
-        elif driver_id in missing:
-            data = try_get_image(image_url)
+
+def fetch_from_sitemaps(sitemap_urls: list[str], page_path: str, drivers: list[dict[str, str]], missing: set[str]) -> dict[str, bytes]:
+    pages: dict[str, str] = {}
+    for sitemap_url in sitemap_urls:
+        pages |= sitemap_pages(sitemap_url, page_path)
+
+    matches, unmatched = match_pages(sorted(pages), drivers)
+    guessed = [f'{match.slug} -> {match.driver_id}' for match in matches if not match.exact and match.driver_id in missing]
+    if guessed:
+        print('matched by similarity, check them:', ', '.join(guessed))
+
+    found = {}
+    for match in matches:
+        if match.driver_id in missing:
+            data = try_get_image(pages[match.slug])
             if data:
-                found[driver_id] = data
+                found[match.driver_id] = data
             else:
-                print(f'  {slug}: not a valid transparent image')
-    return found, unmatched
+                print(f'  {match.slug}: not a valid transparent image')
+
+    if unmatched:
+        print(f'{len(unmatched)} pages without a driver in our data (add one with add_photo.py if it is a driver of ours):')
+        for slug in unmatched:
+            print(f'  {slug}  {pages[slug]}')
+    return found
 
 
 def fetch_from_templates(
@@ -187,9 +166,9 @@ def main() -> None:
     args = parser.parse_args()
 
     load_env_file()
-    sitemap_url = os.environ.get('DRIVERS_SITEMAP_URL')
+    sitemap_urls = os.environ.get('DRIVERS_SITEMAP_URL', '').split()
     templates = os.environ.get('DRIVERS_FALLBACK_URLS', '').split()
-    if not sitemap_url and not templates:
+    if not sitemap_urls and not templates:
         sys.exit('Set DRIVERS_SITEMAP_URL and/or DRIVERS_FALLBACK_URLS (see the top of this file)')
 
     with open(args.drivers_csv, newline='', encoding='utf-8') as file:
@@ -205,10 +184,9 @@ def main() -> None:
     have = {path.stem for path in OUT_DIR.glob('*.webp')}
     missing = {driver['id'] for driver in drivers} - have
     originals: dict[str, bytes] = {}
-    unmatched: list[str] = []
 
-    if sitemap_url:
-        originals, unmatched = fetch_from_sitemap(sitemap_url, drivers, missing)
+    if sitemap_urls:
+        originals = fetch_from_sitemaps(sitemap_urls, os.environ.get('DRIVERS_PAGE_PATH', '/drivers/'), drivers, missing)
         print(f'sitemap: {len(originals)} images')
     if templates:
         extra = fetch_from_templates(templates, drivers, missing - originals.keys(), seasons, args.attempts)
@@ -220,8 +198,6 @@ def main() -> None:
 
     covered = {path.stem for path in OUT_DIR.glob('*.webp')}
     print(f'drivers with image {len(covered)}/{len(drivers)}')
-    if unmatched:
-        print('pages of the sitemap without a driver in our data:', ', '.join(unmatched))
 
 
 if __name__ == '__main__':

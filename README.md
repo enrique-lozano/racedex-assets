@@ -28,39 +28,7 @@ The images come from several public sources, and their original authors are not 
 
 ## Scripts
 
-They work on Windows, macOS and Linux (Python 3.10+). Use a virtual environment, so the packages don't mix with the ones of your system:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-| Command | What it does |
-|---|---|
-| `python -I scripts/fetch_drivers.py <drivers.csv>` | Downloads the drivers that don't have an image. Copy `.env.example` to `.env` to set where from. |
-| `python -I scripts/add_photo.py <driverId> <image>` | Adds or replaces a photo by hand. |
-| `python -I scripts/report_missing.py <racedex.db>` | Lists the drivers without a photo. |
-
-`drivers.csv` and `racedex.db` are the files of the RaceDex API, where the driver ids come from.
-
-### Adding a photo by hand
-
-```bash
-python -I scripts/add_photo.py prost ~/Downloads/prost.png
-```
-
-The image is framed like the rest and saved as `drivers/prost.webp`, replacing the previous one. It has to be a **transparent** image. If it isn't, add `--remove-background`, which removes the background with [rembg](https://github.com/danielgatis/rembg), an AI model that runs on your computer:
-
-```bash
-pip install -r requirements-rembg.txt
-python -I scripts/add_photo.py prost ~/Downloads/prost.jpg --remove-background
-```
-
-- It works with busy backgrounds and with other people behind: it keeps the main subject.
-- The first run downloads a model of about 1 GB. After that, each photo takes about 20 seconds.
-- It can leave halos or cut parts of hair, helmets or collars. **Always look at the result**, and if it is not good, crop the photo around the driver first.
-- The face has to be visible, with the head and shoulders. The more resolution, the better.
+The images are made and maintained with a few Python scripts: downloading the missing ones, adding a photo by hand (even one with a busy background) or listing the drivers without a photo. See [`scripts/README.md`](scripts/README.md).
 
 ## Used by
 
