@@ -56,12 +56,12 @@ Several URLs are separated by spaces. With both, the sitemap goes first and the 
 |---|---|---|
 | `{id}` | id of the driver | `max-verstappen` |
 | `{tla}` | abbreviation | `ver` |
-| `{ref}` | 3 letters of the first name + 3 of the last name + `01` | `maxver01` |
+| `{first3}`, `{last3}` | first 3 letters of the first name and of the last name | `max`, `ver` |
 | `{initial}` | first letter of the first name | `m` |
 | `{first}`, `{last}` | first and last name without accents, with `_` between words | `max`, `verstappen` |
 | `{year}` | a season of the driver, from the last one back | `2024` |
 
-**The case of the placeholder sets the case of the value**, so the same placeholder works for any site: `{tla}` is `ver`, `{TLA}` is `VER`, `{Ref}` is `Maxver01` and `{First}_{Last}` is `Max_Verstappen`. A placeholder that doesn't exist stops the script before any request.
+**The case of the placeholder sets the case of the value**, so the same placeholder works for any site: `{tla}` is `ver`, `{TLA}` is `VER`, `{First3}` is `Max` and `{First}_{Last}` is `Max_Verstappen`. Anything else is written in the URL as it is, like the `01` of `{first3}{last3}01`. A placeholder that doesn't exist stops the script before any request.
 
 With `{year}` the last 3 seasons of the driver are tried (`--attempts` changes it). `DRIVERS_PAGE_PATH` (`/drivers/` by default) is the part of the URL that the pages of the drivers have in common in the sitemap, to ignore the other pages.
 
@@ -69,17 +69,17 @@ With `{year}` the last 3 seasons of the driver are tried (`--attempts` changes i
 
 ```bash
 # Only templates: sites with a pattern, in order. The first one that has the driver wins
-DRIVERS_URL_TEMPLATES=https://example.com/drivers/{year}/{REF}.png https://example.org/headshots/{year}/{TLA}.png
+DRIVERS_URL_TEMPLATES=https://example.com/drivers/{year}/{FIRST3}{LAST3}01.png https://example.org/headshots/{year}/{TLA}.png
 
 # Only a sitemap: a site without a pattern, but with a list of its pages
 DRIVERS_SITEMAP_URL=https://example.net/drivers-sitemap.xml
 
 # A site that has the latest image of each driver, without a year (the URL has the name: .../M/MAXVER01_Max_Verstappen/maxver01.png)
-DRIVERS_URL_TEMPLATES=https://example.com/drivers/{INITIAL}/{REF}_{First}_{Last}/{ref}.png
+DRIVERS_URL_TEMPLATES=https://example.com/drivers/{INITIAL}/{FIRST3}{LAST3}01_{First}_{Last}/{first3}{last3}01.png
 
 # Both: the sitemap has the history and the templates complete the drivers of the last seasons
 DRIVERS_SITEMAP_URL=https://example.net/drivers-sitemap.xml
-DRIVERS_URL_TEMPLATES=https://example.com/drivers/{year}/{REF}.png
+DRIVERS_URL_TEMPLATES=https://example.com/drivers/{year}/{FIRST3}{LAST3}01.png
 ```
 
 The images that a site has for the drivers of the last seasons usually follow a pattern, and the ones of the history usually don't: that is why using both works best.

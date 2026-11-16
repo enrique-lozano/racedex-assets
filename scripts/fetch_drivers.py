@@ -17,11 +17,11 @@ The images come from these sources. Both are optional, but at least one is neede
    a transparent image wins. A template can use:
      {id}     id of the driver in RaceDex
      {tla}    abbreviation of the driver (ver)
-     {ref}    first 3 letters of the first name + first 3 of the last name + 01 (maxver01)
-     {initial}      first letter of the first name (m)
+     {initial}        first letter of the first name (m)
+     {first3}, {last3}  first 3 letters of the first and of the last name (max, ver)
      {first}, {last}  first and last name without accents, with `_` between words (max, verstappen)
      {year}   a season of the driver: from the last one back, `--attempts` seasons
-   The case of the placeholder sets the case of the value: {tla} ver, {TLA} VER, {Ref} Maxver01, {First} Max.
+   The case of the placeholder sets the case of the value: {tla} ver, {TLA} VER, {First3} Max, {First} Max.
 2. DRIVERS_SITEMAP_URL: for sites whose image URLs can't be built from a pattern. A sitemap is a file that many sites
    publish, with their pages and the images of each one. Sitemap(s) with one page per driver and an image in each
    (separated by spaces, if there are several). The pages are matched to our drivers by name (see matching.py).
@@ -94,7 +94,8 @@ def template_values(driver: dict[str, str]) -> dict[str, str]:
     return {
         'id': driver['id'],
         'tla': driver['abbreviation'],
-        'ref': f"{letters(driver['firstName'])}{letters(driver['lastName'])}01",
+        'first3': letters(driver['firstName']),
+        'last3': letters(driver['lastName']),
         'initial': words(driver['firstName'])[0][:1],
         'first': '_'.join(words(driver['firstName'])),
         'last': '_'.join(words(driver['lastName'])),
@@ -102,7 +103,7 @@ def template_values(driver: dict[str, str]) -> dict[str, str]:
 
 
 def apply_case(value: str, spelled: str) -> str:
-    """The case of a placeholder sets the case of its value: {ref} maxver01, {REF} MAXVER01, {Ref} Maxver01"""
+    """The case of a placeholder sets the case of its value: {first3} max, {FIRST3} MAX, {First3} Max"""
     if spelled.isupper():
         return value.upper()
     if spelled.islower():

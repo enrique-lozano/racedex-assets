@@ -16,7 +16,7 @@ def render(template: str, driver: dict[str, str] = VERSTAPPEN, **extra: str) -> 
 
 class TemplateTest(unittest.TestCase):
     def test_the_case_of_the_placeholder_sets_the_case_of_the_value(self):
-        self.assertEqual(render('{ref} {REF} {Ref}'), 'maxver01 MAXVER01 Maxver01')
+        self.assertEqual(render('{first3}{last3} {FIRST3}{LAST3} {First3}{Last3}'), 'maxver MAXVER MaxVer')
         self.assertEqual(render('{tla} {TLA}'), 'ver VER')
         self.assertEqual(render('{initial} {INITIAL}'), 'm M')
 
@@ -30,11 +30,11 @@ class TemplateTest(unittest.TestCase):
 
     def test_accents_are_removed(self):
         driver = {'id': 'raikkonen', 'abbreviation': 'RAI', 'firstName': 'Kimi', 'lastName': 'Räikkönen'}
-        self.assertEqual(render('{REF}/{Last}', driver), 'KIMRAI01/Raikkonen')
+        self.assertEqual(render('{FIRST3}{LAST3}01/{Last}', driver), 'KIMRAI01/Raikkonen')
 
     def test_a_real_template(self):
         self.assertEqual(
-            render('https://example.com/{INITIAL}/{REF}_{First}_{Last}/{ref}.png'),
+            render('https://example.com/{INITIAL}/{FIRST3}{LAST3}01_{First}_{Last}/{first3}{last3}01.png'),
             'https://example.com/M/MAXVER01_Max_Verstappen/maxver01.png',
         )
         self.assertEqual(render('https://example.com/{year}/{TLA}.png', year='2024'), 'https://example.com/2024/VER.png')
