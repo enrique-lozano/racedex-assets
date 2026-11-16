@@ -57,6 +57,9 @@ Several URLs are separated by spaces. With both, the sitemap goes first and the 
 | `{id}` | id of the driver | `verstappen` |
 | `{tla}` | abbreviation, in capitals | `VER` |
 | `{ref}` | 3 letters of the first name + 3 of the last name + `01`, in capitals | `MAXVER01` |
+| `{ref_lower}` | the same, in lowercase | `maxver01` |
+| `{initial}` | first letter of the first name, in capitals | `M` |
+| `{first}`, `{last}` | first and last name without accents, with `_` between words | `Max`, `Verstappen` |
 | `{year}` | a season of the driver, from the last one back | `2024` |
 
 With `{year}` the last 3 seasons of the driver are tried (`--attempts` changes it). `DRIVERS_PAGE_PATH` (`/drivers/` by default) is the part of the URL that the pages of the drivers have in common in the sitemap, to ignore the other pages.
@@ -69,6 +72,9 @@ DRIVERS_URL_TEMPLATES=https://example.com/drivers/{year}/{ref}.png https://examp
 
 # Only a sitemap: a site without a pattern, but with a list of its pages
 DRIVERS_SITEMAP_URL=https://example.net/drivers-sitemap.xml
+
+# A site that has the latest image of each driver, without a year (the URL has the name: .../M/MAXVER01_Max_Verstappen/maxver01.png)
+DRIVERS_URL_TEMPLATES=https://example.com/drivers/{initial}/{ref}_{first}_{last}/{ref_lower}.png
 
 # Both: the sitemap has the history and the templates complete the drivers of the last seasons
 DRIVERS_SITEMAP_URL=https://example.net/drivers-sitemap.xml

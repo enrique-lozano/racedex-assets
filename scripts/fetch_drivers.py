@@ -18,6 +18,9 @@ The images come from these sources. Both are optional, but at least one is neede
      {id}    id of the driver in RaceDex
      {tla}   abbreviation of the driver, in capitals (VER)
      {ref}   first 3 letters of the first name + first 3 of the last name + 01, in capitals (MAXVER01)
+     {ref_lower}  the same in lowercase (maxver01)
+     {initial}    first letter of the first name, in capitals (M)
+     {first}, {last}  first and last name without accents, with `_` between words (Max, Verstappen)
      {year}  a season of the driver: from the last one back, `--attempts` seasons
 2. DRIVERS_SITEMAP_URL: for sites whose image URLs can't be built from a pattern. A sitemap is a file that many sites
    publish, with their pages and the images of each one. Sitemap(s) with one page per driver and an image in each
@@ -81,9 +84,20 @@ def try_get_image(url: str, remove_bg: bool = False) -> bytes | None:
     return data
 
 
-def reference(driver: dict[str, str]) -> str:
+def template_values(driver: dict[str, str]) -> dict[str, str]:
+    """What a URL template can use of a driver"""
     letters = lambda name: slugify(name).replace('-', '').upper()[:3]
-    return f"{letters(driver['firstName'])}{letters(driver['lastName'])}01"
+    underscored = lambda name: '_'.join(w.capitalize() for w in slugify(name).split('-'))
+    ref = f"{letters(driver['firstName'])}{letters(driver['lastName'])}01"
+    return {
+        'id': driver['id'],
+        'tla': driver['abbreviation'].upper(),
+        'ref': ref,
+        'ref_lower': ref.lower(),
+        'initial': slugify(driver['firstName'])[:1].upper(),
+        'first': underscored(driver['firstName']),
+        'last': underscored(driver['lastName']),
+    }
 
 
 def sitemap_pages(sitemap_url: str, page_path: str) -> dict[str, str]:
@@ -139,7 +153,7 @@ def fetch_from_templates(
         if driver['id'] not in missing:
             continue
 
-        values = {'id': driver['id'], 'tla': driver['abbreviation'].upper(), 'ref': reference(driver)}
+        values = template_values(driver)
         years = []
         if driver['id'] in seasons:
             first, last = seasons[driver['id']]
